@@ -1,0 +1,622 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+<script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+<title>3D Rendering??? In JavaScript??? Impossible...</title>
+<style>
+
+* {
+  margin:auto
+}
+
+.container {
+  margin-top: 5px;
+  margin-bottom: 5px;
+}
+
+#topBar > div > div {
+  margin-right: 10px;
+  margin-left: 10px;
+}
+
+#bottomBar > div {
+  display: flex;
+
+  margin-right: 10px;
+  margin-left: 10px;
+}
+
+</style>
+</head>
+
+<body>
+
+<div class="container" style="display: flex; width:fit-content" id="topBar">
+</div>
+
+<canvas id="renderCanvas" style="border-style: solid; border-width:1px; margin:auto; display:block"></canvas>
+
+<div class="container" style="display: flex; width:fit-content" id="bottomBar">
+  <div>
+    <p>Field of View: 1</p>
+    <input type="range" min="1" max="120" value="70" class="slider" id="fieldOfViewSlider">
+    <p>120</p>
+  </div>
+  <div>
+    <input type="checkbox" id="wireframeToggle" style="margin-right:5px">
+    <p>Wireframe</p>
+  </div>
+</div>
+
+<script>
+
+const SCREEN_SIZE = 400
+const RENDER_CANVAS = document.getElementById("renderCanvas")
+RENDER_CANVAS.width = SCREEN_SIZE
+RENDER_CANVAS.height = SCREEN_SIZE
+const RENDER_CONTEXT = RENDER_CANVAS.getContext("2d");
+RENDER_CONTEXT.lineWidth = 0.25;
+
+// transforms a point from a matrix's local space to world space
+function pointToWorldSpace(point, matrix) {
+  
+  var x = point.x;
+  var y = point.y;
+  var z = point.z;
+  
+  return {
+    x: matrix[0][0] * x + matrix[0][1] * y + matrix[0][2] * z,
+    y: matrix[1][0] * x + matrix[1][1] * y + matrix[1][2] * z,
+    z: matrix[2][0] * x + matrix[2][1] * y + matrix[2][2] * z
+  };
+  
+}
+
+// vector operations
+{
+
+function diff(a, b) {
+  return {x: a.x - b.x, y: a.y - b.y, z: a.z - b.z};
+}
+
+function normalize(v) {
+  // makes a clone of the vector passed to the function so that the original vector isn't altered
+  v = {x: v.x, y: v.y, z: v.z};
+  var magnitude = Math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
+  v.x /= magnitude;
+  v.y /= magnitude;
+  v.z /= magnitude;
+  return v;
+}
+
+function cross(a, b) {
+  return {
+    x: a.y * b.z - a.z * b.y,
+    y: a.z * b.x - a.x * b.z,
+    z: a.x * b.y - a.y * b.x
+  };
+}
+
+}
+
+// object generation
+{
+
+// grab the utah teapot's description from a pastebin since it's like, 5000 lines long and I don't wanna paste that all into my code
+let utahTeapotJson
+$.ajax({
+   type: 'GET',
+   url: "https://raw.githubusercontent.com/Caramellia/utahteapotthingy/main/data2",
+   success: function(data){
+     utahTeapotJson = data
+   }
+})
+
+var objTemplates = [
+  {
+    name: "UV Sphere",
+    params: [
+      {name: "Loop Cuts", minValue: 2, defaultValue: 20},
+      {name: "Slices", minValue: 3, defaultValue: 40}
+    ],
+    generator: function(numLoops, numCuts) {
+      var points = [];
+      var tris = [];
+      var loops = [];
+      // first pass, generate vertices
+      for (var loop = 0; loop <= numLoops; loop++) {
+        loops[loop] = {absoluteIndex: points.length, points: []};
+        var loopPosY = 2 * (loop/numLoops - 0.5);
+        loopPosY = Math.cos(loop/numLoops * Math.PI);
+        var loopRadius = Math.sqrt(1 - loopPosY * loopPosY);
+        var max = (loop % numLoops == 0 ? 1 : numCuts);
+        for (var cut = 0; cut < max; cut++) {
+          var angle = -cut/max * Math.PI * 2;
+          var point = {x: Math.cos(angle) * loopRadius * Math.sqrt(2), y: loopPosY  * Math.sqrt(2), z: Math.sin(angle) * loopRadius  * Math.sqrt(2)};
+          loops[loop].points.push({
+            absoluteIndex: points.length,
+            loopIndex: points.length - loops[loop].absoluteIndex,
+            point: point}
+          );
+          points.push(point);
+        }
+      }
+      // second pass, generate faces
+      for (loop = 1; loop <= loops.length - 2; loop++) {
+        var loopObj = loops[loop];
+        for (var startVert = 0; startVert < loopObj.points.length; startVert++) {
+          var pointObj = loopObj.points[startVert];
+          if (loop == 1) { // connect to top vertex if checking first loop
+            tris.push({
+              verts: [
+                0,
+                loops[loop].points[(startVert + 1) % numCuts].absoluteIndex,
+                pointObj.absoluteIndex
+              ]
+            });
+          }
+          if (loop == loops.length - 2) { // connect to bottom vertex if checking last loop
+            tris.push({
+              verts: [
+                pointObj.absoluteIndex,
+                loops[loop].points[(startVert + 1) % numCuts].absoluteIndex,
+                points.length - 1
+              ]
+            });
+          } else { // otherwise connect to next loop
+            tris.push({
+            color: "red",
+            verts: [
+              pointObj.absoluteIndex,
+              loops[loop + 1].points[(startVert + 1) % numCuts].absoluteIndex,
+              loops[loop + 1].points[startVert].absoluteIndex
+              ]
+            });
+            tris.push({
+              color: "red",
+              verts: [
+                pointObj.absoluteIndex,
+                loops[loop].points[(startVert + 1) % numCuts].absoluteIndex,
+                loops[loop + 1].points[(startVert + 1) % numCuts].absoluteIndex
+              ]
+            });
+          }
+        }
+      }
+      return {verts: points, tris: tris};
+    }
+  },
+  {
+    name: "Cube",
+    params: [],
+    generator: function() {
+      return {
+        verts: [
+          // bottom plane
+          {x: -1, y: -1, z: -1},
+          {x: -1, y: -1, z: 1},
+          {x: 1, y: -1, z: 1},
+          {x: 1, y: -1, z: -1},
+          // top plane
+          {x: -1, y: 1, z: -1},
+          {x: -1, y: 1, z: 1},
+          {x: 1, y: 1, z: 1},
+          {x: 1, y: 1, z: -1},
+        ],
+        tris: [
+          // bottom faces
+          {verts: [0, 1, 2]},
+          {verts: [0, 2, 3]},
+          // top faces
+          {verts: [4, 6, 5]},
+          {verts: [4, 7, 6]},
+          // left faces (x = -1):
+          {verts: [0, 4, 5]},
+          {verts: [0, 5, 1]},
+          // right faces (x = 1):
+          {verts: [2, 6, 3]},
+          {verts: [6, 7, 3]},
+          // back faces (z = 1):
+          {verts: [1, 5, 6]},
+          {verts: [1, 6, 2]},
+          // front faces (z = -1):
+          {verts: [0, 7, 4]},
+          {verts: [0, 3, 7]},
+        ]
+      }
+    }
+  },
+  {
+    name: "Cylinder",
+    params: [
+      {name: "Slices", minValue: 3, defaultValue: 40}
+    ],
+    generator: function(slices) {
+      let points = [];
+      let tris = [];
+      let topLoop = [];
+      let bottomLoop = [];
+      points[0] = {x: 0, y: 1, z: 0};
+      points[1] = {x: 0, y: -1, z: 0}
+      // first pass, generate vertices
+      for (let slice = 0; slice < slices; slice++) {
+        let angle = -slice/slices * Math.PI * 2;
+        let topPoint = {absoluteIndex: points.length, point: {x: Math.cos(angle), y: 1, z: Math.sin(angle)}};
+        points.push(topPoint.point);
+
+        let bottomPoint = {absoluteIndex: points.length, point: {x: Math.cos(angle), y: -1, z: Math.sin(angle)}};
+        points.push(bottomPoint.point);
+
+        topLoop.push(topPoint);
+        bottomLoop.push(bottomPoint);
+      }
+      // second pass, generate faces
+      for (let index = 0; index < slices; index++) {
+        let topPoint = topLoop[index];
+        let bottomPoint = bottomLoop[index];
+        let nextPointIndex = (index + 1) % slices
+        // vertical faces
+        tris.push({verts: [bottomPoint.absoluteIndex, topPoint.absoluteIndex, topLoop[nextPointIndex].absoluteIndex]});
+        tris.push({verts: [bottomPoint.absoluteIndex, topLoop[nextPointIndex].absoluteIndex, bottomLoop[nextPointIndex].absoluteIndex]});
+        // top and bottom faces
+        tris.push({verts: [bottomPoint.absoluteIndex, bottomLoop[nextPointIndex].absoluteIndex, 1]});
+        tris.push({verts: [topPoint.absoluteIndex, 0, topLoop[nextPointIndex].absoluteIndex]});
+      }
+      return {verts: points, tris: tris};
+    }
+  },
+  {
+    name: "Cone",
+    params: [
+      {name: "Slices", minValue: 3, defaultValue: 40}
+    ],
+    generator: function(slices) {
+      let points = [];
+      let tris = [];
+      let loop = [];
+      points[0] = {x: 0, y: 1, z: 0};
+      points[1] = {x: 0, y: -1, z: 0}
+      // first pass, generate vertices
+      for (let slice = 0; slice < slices; slice++) {
+        let angle = -slice/slices * Math.PI * 2;
+
+        let point = {absoluteIndex: points.length, point: {x: Math.cos(angle), y: -1, z: Math.sin(angle)}};
+        points.push(point.point);
+        loop.push(point);
+      }
+      // second pass, generate faces
+      for (let index = 0; index < slices; index++) {
+        let point = loop[index];
+        let nextPointIndex = (index + 1) % slices
+        tris.push({verts: [point.absoluteIndex, loop[nextPointIndex].absoluteIndex, 1]});
+        tris.push({verts: [point.absoluteIndex, 0, loop[nextPointIndex].absoluteIndex]});
+      }
+      return {verts: points, tris: tris};
+    }
+  },
+  {
+    name: "Utah Teapot",
+    params: [],
+    generator: function() {
+      let obj = JSON.parse(utahTeapotJson);
+      obj.verts.forEach(function(vert) {
+        vert.x *= 2.5;
+        vert.y *= 2.5;
+        vert.y -= 1;
+        vert.z *= 2.5;
+      });
+      obj.tris.forEach(function(tri) {
+        tri.verts[0] -= 1;
+        tri.verts[1] -= 1;
+        tri.verts[2] -= 1;
+        let temp = tri.verts[2]
+        tri.verts[2] = tri.verts[1]
+        tri.verts[1] = temp;
+      });
+      return obj;
+    }
+  }
+];
+
+// generates data about the object relating to triangles and vertices
+function generateObjData() {
+  
+  // generate tri normals and list of attached tris for each vert
+  for (var index = 0; index < obj.tris.length; index++) {
+    var tri = obj.tris[index];
+    tri.index = index;
+    var vert0 = obj.verts[tri.verts[0]];
+    var vert1 = obj.verts[tri.verts[1]];
+    var vert2 = obj.verts[tri.verts[2]];
+    tri.normal = normalize(cross(diff(vert0, vert2), diff(vert0, vert1)));
+    for (var localVertIndex = 0; localVertIndex < 3; localVertIndex++) {
+      var vert = obj.verts[tri.verts[localVertIndex]];
+      if (vert.tris == undefined) {
+        vert.tris = [];
+        vert.numTris = 0;
+      }
+      vert.tris.push(tri);
+      vert.numTris += 1;
+    }
+    tri.color = `rgb(${tri.normal.x * 128 + 128}, ${tri.normal.y * 128 + 128}, ${tri.normal.z * 128 + 128})`;
+  }
+  
+  // generate cam space and screen space vert lists
+  obj.camSpaceVerts = [];
+  obj.screenSpaceVerts = [];
+  obj.zOrderedScreenSpaceVerts = [];
+  for (var i = 0; i < obj.verts.length; i++) {
+    var vert = obj.verts[i];
+    obj.camSpaceVerts[i] = {x: 0, y: 0, z: 0, tris: vert.tris, numTris: vert.numTris};
+    obj.screenSpaceVerts[i] = {x: 0, y: 0, z: 0, tris: vert.tris, numTris: vert.numTris};
+    obj.zOrderedScreenSpaceVerts[i] = obj.screenSpaceVerts[i];
+  }
+  
+}
+
+var selectedObjType = 0;
+// regenerates the object based on the user's specified parameters
+function regenerateObj() {
+  let paramValues = [];
+  let template = objTemplates[selectedObjType]
+  template.params.forEach(function(param) {
+    paramValues.push(document.getElementById(param.name).value);
+  })
+  obj = template.generator(...paramValues);
+  generateObjData();
+}
+// changes the document's html when a different object type is selected
+function selectObjType(index) {
+  selectedObjType = index;
+  document.getElementById("params").innerHTML = objTemplates[index].paramsHTML;
+  // add changed event listeners for the params elements
+  objTemplates[selectedObjType].params.forEach(function(param) {
+    document.getElementById(param.name).addEventListener("change", function() {
+      regenerateObj();
+    });
+  })
+  regenerateObj();
+}
+
+// generate html for the object selector dropdown
+var objDropdownHTML = `<div><select id="objDropdown">`;
+objTemplates.forEach(function(template, index) {
+  objDropdownHTML += `<option value="${index}">${template.name}</option>`;
+  // generate html for the different parameters the object has
+  template.paramsHTML = "";
+  template.params.forEach(function(param) {
+    template.paramsHTML += `<div><label for="${param.name}">${param.name}: </label><input id="${param.name}" type="number" value="${param.defaultValue}" min="${param.minValue}" step="1"></div>`
+  });
+});
+objDropdownHTML += `</select></div><div id="params" style="display: flex"> </div>`;
+document.getElementById("topBar").innerHTML = objDropdownHTML
+
+// event listener for when the selected object changes
+var objDropdownElement = document.getElementById("objDropdown")
+objDropdownElement.addEventListener("change", function() {
+  selectObjType(objDropdownElement.value);
+});
+
+// initialize as uv sphere
+selectObjType(0);
+regenerateObj();
+
+}
+
+// rendering
+
+{
+
+// fov and related html junk
+let fieldOfView = 0;
+let fieldOfViewProjectionScale = 1;
+function setFOV(value) {
+  fieldOfView = value
+  fieldOfViewProjectionScale = Math.tan(-fieldOfView * 0.5 + Math.PI * 0.5) * 0.5;
+}
+let fovSlider = document.getElementById("fieldOfViewSlider")
+fovSlider.addEventListener("change", function() {
+  setFOV(fovSlider.value * Math.PI/180)
+});
+setFOV(70 * Math.PI/180);
+
+// wireframe and related html junk
+let showWireframe = false;
+let wireframeToggle = document.getElementById("wireframeToggle")
+wireframeToggle.addEventListener("change", function() {
+  showWireframe = wireframeToggle.checked;
+});
+
+function zOrderVerts(a, b) { // orders from nearest to furthest
+  return a.z - b.z;
+}
+
+function calcAllRelativeVerts() { // calculate camera space and screen space vertices
+  
+  // all these variables at the top are for the sake of efficiency
+  // could LOOK cleaner but I'm implementing a 3d rendering algorithm, entirely on the cpu, and in javascript :P
+  // doing 18 array lookups each iteration of the loop makes this about 25% slower According To My Benchmarks
+  
+  var objWorldSpaceVerts = obj.verts;
+  var objCamSpaceVerts = obj.camSpaceVerts;
+  var objScreenSpaceVerts = obj.screenSpaceVerts;
+  var numVerts = objWorldSpaceVerts.length;
+  var x;
+  var y;
+  var z;
+  var worldSpaceVert;
+  var screenSpaceVert;
+  var camSpaceVert;
+  var m00 = camRotationMatrix[0][0];
+  var m10 = camRotationMatrix[1][0];
+  var m20 = camRotationMatrix[2][0];
+  var m01 = camRotationMatrix[0][1];
+  var m11 = camRotationMatrix[1][1];
+  var m21 = camRotationMatrix[2][1];
+  var m02 = camRotationMatrix[0][2];
+  var m12 = camRotationMatrix[1][2];
+  var m22 = camRotationMatrix[2][2];
+  
+  for (var i = 0; i < numVerts; i++) {
+    
+    worldSpaceVert = objWorldSpaceVerts[i];
+  	x = worldSpaceVert.x - camPosition.x;
+  	y = worldSpaceVert.y - camPosition.y;
+  	z = worldSpaceVert.z - camPosition.z;
+  	
+  	camSpaceVert = objCamSpaceVerts[i];
+  	
+  	camSpaceVert.x = m00 * x + m10 * y + m20 * z;
+  	camSpaceVert.y = m01 * x + m11 * y + m21 * z;
+  	camSpaceVert.z = m02 * x + m12 * y + m22 * z;
+    
+  	x = camSpaceVert.x;
+  	y = camSpaceVert.y;
+  	z = camSpaceVert.z;
+  	
+  	screenSpaceVert = objScreenSpaceVerts[i];
+  	
+  	screenSpaceVert.x = (x / -z * fieldOfViewProjectionScale) * SCREEN_SIZE + SCREEN_SIZE * 0.5;
+  	screenSpaceVert.y = (-y / -z * fieldOfViewProjectionScale) * SCREEN_SIZE + SCREEN_SIZE * 0.5;
+  	screenSpaceVert.z = z;
+    
+  }
+  
+  obj.zOrderedScreenSpaceVerts.sort(zOrderVerts);
+  
+}
+
+function isPolygonFacingCamera(x0, y0, x1, y1, x2, y2) { // uses the z part of the cross product to see if the polygon's vertices were "mirrored"
+  var dir01x = x1 - x0;
+  var dir01y = y1 - y0;
+  var dir02x = x2 - x0;
+  var dir02y = y2 - y0;
+  return dir01x * dir02y - dir01y * dir02x > 0;
+}
+
+function renderAllTriangles() {
+  
+  let ssVerts = obj.screenSpaceVerts;
+  let zOrderedVerts = obj.zOrderedScreenSpaceVerts;
+  let numVerts = obj.verts.length;
+  let vert;
+  let vertTris;
+  let vert0
+  let vert1
+  let vert2
+  let triIndex = 0;
+  let tri;
+  let zOrderedTris = [];
+  
+  // filter out backfaces
+  for (let vertIndex = 0; vertIndex < numVerts; vertIndex++) {
+    vert = zOrderedVerts[vertIndex];
+    vertTris = vert.tris;
+    for (triIndex = 0; triIndex < vert.numTris; triIndex++) {
+      tri = vertTris[triIndex];
+      if (tri.lastRenderFrame != currentFrame) {
+        tri.lastRenderFrame = currentFrame;
+        vert0 = ssVerts[tri.verts[0]];
+        vert1 = ssVerts[tri.verts[1]];
+        vert2 = ssVerts[tri.verts[2]];
+        if (isPolygonFacingCamera(vert0.x, vert0.y, vert1.x, vert1.y, vert2.x, vert2.y)) {
+          zOrderedTris.push(tri);
+        }
+      }
+    }
+  }
+  
+  // render triangles that need to be rendered
+  let numRenderTris = zOrderedTris.length; // make a variable so an array lookup doesn't have to happen every single iteration of the loop
+  for (let triIndex = 0; triIndex < numRenderTris; triIndex++) {
+
+    tri = zOrderedTris[triIndex];
+    vert0 = ssVerts[tri.verts[0]];
+    vert1 = ssVerts[tri.verts[1]];
+    vert2 = ssVerts[tri.verts[2]];
+
+    RENDER_CONTEXT.strokeStyle = showWireframe ? "#000000" : tri.color;
+    RENDER_CONTEXT.fillStyle = tri.color;
+    RENDER_CONTEXT.beginPath();
+    RENDER_CONTEXT.lineTo(vert0.x, vert0.y);
+    RENDER_CONTEXT.lineTo(vert1.x, vert1.y);
+    RENDER_CONTEXT.lineTo(vert2.x, vert2.y);
+    RENDER_CONTEXT.fill();
+    RENDER_CONTEXT.lineTo(vert0.x, vert0.y);
+    RENDER_CONTEXT.lineTo(vert1.x, vert1.y);
+    RENDER_CONTEXT.lineTo(vert2.x, vert2.y);
+    RENDER_CONTEXT.stroke();
+  }
+
+}
+
+}
+
+// camera movement and 60fps loop
+
+var currentFrame = 0;
+
+var camPosition = {x: 0, y: 0, z: 0};
+var camRotationMatrix = [
+  // r u b
+  [1, 0, 0],
+  [0, 1, 0],
+  [0, 0, 1]
+];
+
+var mousePosition = {x: 0, y: 0};
+var mouseDelta = {x: 0, y: 0};
+var rotationMultiplier = 0.01;
+
+var camRotationEulerAngles = {x: 0, y: 0};
+
+var currentMousePosition = {x: 0, y: 0}
+var lastCheckedMousePosition = {x: 0, y: 0}
+var isMouseDown = false;
+RENDER_CANVAS.addEventListener("mousedown", function() {
+  isMouseDown = true;
+});
+RENDER_CANVAS.addEventListener("mouseup", function() {
+  isMouseDown = false;
+});
+RENDER_CANVAS.addEventListener("mouseleave", function() {
+  isMouseDown = false;
+});
+RENDER_CANVAS.addEventListener("mousemove", function(event) {
+  currentMousePosition = {x: event.offsetX, y: event.offsetY};
+});
+
+setInterval(function() {
+
+  RENDER_CONTEXT.clearRect(0, 0, 400, 400);
+  
+  currentFrame += 1;
+  
+  mouseDelta.x = (currentMousePosition.x - lastCheckedMousePosition.x);
+  mouseDelta.y = (currentMousePosition.y - lastCheckedMousePosition.y);
+  lastCheckedMousePosition.x = currentMousePosition.x;
+  lastCheckedMousePosition.y = currentMousePosition.y;
+  if (isMouseDown) {
+    camRotationEulerAngles.x -= mouseDelta.x * rotationMultiplier;
+    camRotationEulerAngles.y -= mouseDelta.y * rotationMultiplier;
+    y = camRotationEulerAngles.y;
+    x = camRotationEulerAngles.x;
+    camRotationMatrix = [
+      [Math.cos(x), Math.sin(x) * Math.sin(y), Math.sin(x) * Math.cos(y)],
+      [0, Math.cos(y), -Math.sin(y)],
+      [-Math.sin(x), Math.cos(x) * Math.sin(y), Math.cos(x) * Math.cos(y)]
+    ];
+  }
+  
+  camPosition = pointToWorldSpace({x: 0, y: 0, z: 4}, camRotationMatrix);
+  
+  calcAllRelativeVerts();
+  renderAllTriangles();
+}, 1000/60);
+
+</script>
+
+</body>
+</html>
+
